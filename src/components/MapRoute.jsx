@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import {APIProvider, Map,useMap, useMapsLibrary, AdvancedMarker} from "@vis.gl/react-google-maps";
+import {
+  APIProvider,
+  Map,
+  useMap,
+  useMapsLibrary,
+  AdvancedMarker,
+} from "@vis.gl/react-google-maps";
 
 // Constantes globales con las coordenadas y etiquetas por defecto si el usuario no ingresa nada.
 export const TARGET_DEFAULTS = {
@@ -7,15 +13,15 @@ export const TARGET_DEFAULTS = {
     lat: 6.2319,
     lng: -75.5681,
     label: "Medellín, CO",
-    photoUrl:
-      "https://images.unsplash.com/photo-1596708453982-12a8ab45187e?q=80&w=200&auto=format&fit=crop",
+    city: "Medellín",
+    seed: 123456,
   },
   pointB: {
-    lat: 4.711,
-    lng: -74.0721,
-    label: "Bogotá, CO",
-    photoUrl:
-      "https://images.unsplash.com/photo-1593563914876-c222ff433b00?q=80&w=200&auto=format&fit=crop",
+    lat: 6.2301,
+    lng: -75.5620,
+    label: "Medellín, CO",
+    city: "Medellín",
+    seed: 654321,
   },
 };
 
@@ -111,71 +117,17 @@ const DirectionsProvider = ({
 };
 
 // Componente de UI que renderiza exclusivamente el círculo de la fotografía.
-// Usa una estrategia en cascada de respaldos visuales (Street View -> Wikipedia -> Foto Quema)
-const MarkerPhoto = ({ position, label, fallbackUrl, onClick }) => {
-  const [currentUrl, setCurrentUrl] = useState(fallbackUrl);
-  const streetViewLibrary = useMapsLibrary("streetView");
-
-  // Efecto que busca la mejor imagen para este marcador geográfico
-  useEffect(() => {
-    setCurrentUrl(fallbackUrl);
-
-    if (!streetViewLibrary) return;
-
-    // Función auxiliar que busca en internet la foto principal de la ciudad/barrio en Wikipedia
-    const fetchCityPhoto = async () => {
-      try {
-        const city = label.split(",")[0].trim();
-        const res = await fetch(
-          `https://es.wikipedia.org/w/api.php?action=query&prop=pageimages&format=json&piprop=original&titles=${encodeURIComponent(city)}&origin=*`,
-        );
-        const data = await res.json();
-        const pages = data.query.pages;
-        const pageId = Object.keys(pages)[0];
-
-        if (
-          pageId !== "-1" &&
-          pages[pageId].original &&
-          pages[pageId].original.source
-        ) {
-          return pages[pageId].original.source;
-        }
-        return fallbackUrl;
-      } catch (err) {
-        return fallbackUrl; // Ante error de red o de Wikipedia, devuelve un Unsplash
-      }
-    };
-
-    const svService = new streetViewLibrary.StreetViewService();
-    // Busca foto callejera en 50 metros a la redonda del marcador
-    svService
-      .getPanorama({ location: position, radius: 50 })
-      .then(({ data }) => {
-        const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-        const panoId = data.location.pano;
-        const staticUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x600&pano=${panoId}&key=${apiKey}`;
-
-        // Validación extra por si la Cloud Platform frena (ej. 403 Forbidden) la imagen generada
-        const img = new Image();
-        img.onload = () => setCurrentUrl(staticUrl); // Éxito!
-        img.onerror = async () => {
-          const cityImg = await fetchCityPhoto(); // Falló por permisos, cae a Wikipedia
-          setCurrentUrl(cityImg);
-        };
-        img.src = staticUrl;
-      })
-      .catch(async () => {
-        const cityImg = await fetchCityPhoto(); // Falló por falta de carreteras/zonas (selva), cae a Wikipedia
-        setCurrentUrl(cityImg);
-      });
-  }, [streetViewLibrary, position, label, fallbackUrl]);
+// Usa Picsum Photos para garantizar imágenes aleatorias y de alta calidad que siempre cargan.
+const MarkerPhoto = ({ label, city, seed, onClick }) => {
+  // Se usa el servicio Picsum con un 'seed' único para asegurar fotos distintas y aleatorias
+  const photoUrl = `https://picsum.photos/seed/${seed}/600/600`;
 
   return (
     <div
       className="marker-photo"
-      style={{ backgroundImage: `url('${currentUrl}')`, cursor: "pointer" }}
+      style={{ backgroundImage: `url('${photoUrl}')`, cursor: "pointer" }}
       title={`Foto de ${label}`}
-      onClick={() => onClick(currentUrl)}
+      onClick={() => onClick(photoUrl)}
     ></div>
   );
 };
@@ -185,7 +137,8 @@ const MarkerPhoto = ({ position, label, fallbackUrl, onClick }) => {
 const CustomMarker = ({
   position,
   label,
-  fallbackUrl,
+  city,
+  seed,
   letter,
   onPhotoClick,
 }) => {
@@ -194,9 +147,10 @@ const CustomMarker = ({
       <div className="custom-marker">
         <div className="marker-badge">{letter}</div>
         <MarkerPhoto
-          position={position}
           label={label}
-          fallbackUrl={fallbackUrl}
+          city={city}
+          seed={seed}
+          letter={letter}
           onClick={onPhotoClick}
         />
         <div className="marker-label">{label}</div>
@@ -275,19 +229,31 @@ const MapUI = ({ apiKey, mapId }) => {
         geocodeDest,
       ]);
 
+      // Helper para extraer la ciudad o localidad de los componentes de Google
+      const extractCity = (result) => {
+        const cityComp = result.address_components.find(
+          (c) =>
+            c.types.includes("locality") ||
+            c.types.includes("administrative_area_level_2"),
+        );
+        return cityComp ? cityComp.long_name : null;
+      };
+
       // Si todo sale bien, guarda el resultado final en el estado activeRoute
       setActiveRoute({
         pointA: {
           lat: originResult.geometry.location.lat(),
           lng: originResult.geometry.location.lng(),
-          label: originResult.formatted_address.split(",")[0],  // Se queda con la primera parte de "Bogota, Bogota, Colombia"
-          photoUrl: TARGET_DEFAULTS.pointA.photoUrl,
+          label: originResult.formatted_address.split(",")[0],
+          city: extractCity(originResult),
+          seed: Math.floor(Math.random() * 1000000),
         },
         pointB: {
           lat: destResult.geometry.location.lat(),
           lng: destResult.geometry.location.lng(),
           label: destResult.formatted_address.split(",")[0],
-          photoUrl: TARGET_DEFAULTS.pointB.photoUrl,
+          city: extractCity(destResult),
+          seed: Math.floor(Math.random() * 1000000),
         },
       });
     } catch (err) {
@@ -308,7 +274,7 @@ const MapUI = ({ apiKey, mapId }) => {
     <>
       <div className="info-panel glass">
         <h1>Buscador de Rutas</h1>
-        
+
         {/* Panel Formulario con Inputs y Labels interactivos */}
         <form className="search-form" onSubmit={handleSearch}>
           <div className="input-row">
@@ -382,14 +348,16 @@ const MapUI = ({ apiKey, mapId }) => {
         <CustomMarker
           position={activeRoute.pointA}
           label={activeRoute.pointA.label}
-          fallbackUrl={activeRoute.pointA.photoUrl}
+          city={activeRoute.pointA.city}
+          seed={activeRoute.pointA.seed}
           letter="A"
           onPhotoClick={setExpandedPhotoUrl}
         />
         <CustomMarker
           position={activeRoute.pointB}
           label={activeRoute.pointB.label}
-          fallbackUrl={activeRoute.pointB.photoUrl}
+          city={activeRoute.pointB.city}
+          seed={activeRoute.pointB.seed}
           letter="B"
           onPhotoClick={setExpandedPhotoUrl}
         />
@@ -404,7 +372,7 @@ const MapUI = ({ apiKey, mapId }) => {
 };
 
 // COMPONENTE PRINCIPAL (Entry Point de toda la página)
-// Protege el resto de las validaciones de UI confirmando que haya API Keys. 
+// Protege el resto de las validaciones de UI confirmando que haya API Keys.
 // Provee el Context general (<APIProvider>) al resto de funciones.
 export default function MapRoute() {
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
